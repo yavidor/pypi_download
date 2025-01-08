@@ -1,8 +1,12 @@
 from __future__ import annotations
 import argparse
 import dataclasses
+import functools
+import itertools
 import logging
 import pathlib
+import re
+import threading
 import requests
 import parsel
 import urllib.parse
@@ -64,7 +68,18 @@ class Distribution:
         metadata = pkginfo.get_metadata(path)
         if not metadata or metadata.requires_dist:
             return []
-        return [Package(s.split(" ")[0]) for s in metadata.requires_dist]
+        
+        dependencies = []
+        name_pattern = re.compile(r"([a-zA-Z0-9_]+).*")
+        for requirement in metadata.requires_dist:
+            match = name_pattern.match(requirement)
+            if not match:
+                raise ValueError(f"Couldnt parse requirement {requirement!r}")
+            
+
+            dependencies.insert(0, Package(match.group(1)))
+        print(dependencies)
+        return dependencies
 
     def download(self):
         dest = self.dest
@@ -83,6 +98,7 @@ class RecursiveDownloadManager:
         self.package = package
         self.visited: set[Distribution] = set()
         self.load_bar = tqdm.tqdm()
+        self.threads: list[threading.Thread] = []
     
         
     def run(self):
@@ -91,21 +107,30 @@ class RecursiveDownloadManager:
         for distribution in distributions:
             self.recurse(distribution)
 
-    def recurse(self, distribution: Distribution):
-        if distribution in self.visited:
-            return
-
-        else:
-            self.visited.add(distribution)
-            self.load_bar.set_description(f"Downloading {distribution.full_name}")
-            self.load_bar.update()
-            self.load_bar.total += len(distribution.dependencies)
-
-        distribution.download()
         for dependency in distribution.dependencies:
             for dependency_distribution in repository.get().distributions(dependency):
                 self.recurse(dependency_distribution)
 
+
+    def recurse(self, distribution: Distribution):
+        if distribution in self.visited:
+            return
+
+        self.visited.add(distribution)
+        self.load_bar.set_description(f"Downloading {distribution.full_name}")
+        distribution.download()
+        self.load_bar.update()
+        self.load_bar.total += len(distribution.dependencies)
+        self.load_bar.refresh()
+
+        dependencies = distribution.dependencies
+        for dependent_distribution in itertools.chain((dependency.distributions() for dependency in dependencies)):
+            self.recurse(dependent_distribution)
+
+    
+    def wait(self):
+        for thread in self.threads:
+            thread.join()
 
 def recursivly_download(
         package: Package,
@@ -113,6 +138,8 @@ def recursivly_download(
     download_dir.get().mkdir(exist_ok=True)
     manager = RecursiveDownloadManager(package)
     manager.run()
+    manager.wait()
+    
 
 def main():
     parser = argparse.ArgumentParser()
