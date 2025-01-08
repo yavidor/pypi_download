@@ -66,7 +66,7 @@ class Distribution:
     def dependencies(self) -> list[Package]:
         path = str(self.dest)
         metadata = pkginfo.get_metadata(path)
-        if not metadata or metadata.requires_dist:
+        if not metadata or not metadata.requires_dist:
             return []
         
         dependencies = []
@@ -75,10 +75,7 @@ class Distribution:
             match = name_pattern.match(requirement)
             if not match:
                 raise ValueError(f"Couldnt parse requirement {requirement!r}")
-            
-
             dependencies.insert(0, Package(match.group(1)))
-        print(dependencies)
         return dependencies
 
     def download(self):
@@ -124,8 +121,9 @@ class RecursiveDownloadManager:
         self.load_bar.refresh()
 
         dependencies = distribution.dependencies
-        for dependent_distribution in itertools.chain((dependency.distributions() for dependency in dependencies)):
-            self.recurse(dependent_distribution)
+        for dependency in dependencies:
+            for dependency_distribution in repository.get().distributions(dependency):
+                self.recurse(dependency_distribution)
 
     
     def wait(self):
